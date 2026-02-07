@@ -3,6 +3,7 @@ import csv
 import copy
 from utils.hand_tracker import HandTracker
 from utils.webcam import WebCamStream
+from utils.logger import logger
 import os
 
 
@@ -26,19 +27,19 @@ def main():
     try:
         cv2.setUseOptimized(True)
         cv2.setNumThreads(max(cv2.getNumThreads(), 4))
-        print(
+        logger.info(
             f"Using OpenCV with optimization: {cv2.useOptimized()} and {cv2.getNumThreads()} threads"
         )
     except Exception:
-        print("OpenCV optimization not available, running with default settings.")
+        logger.warning("OpenCV optimization not available, running with default settings.")
         pass
 
     vs = WebCamStream(src=0).start()
     tracker = HandTracker()
 
-    print("Collecting Data...")
-    print("Press 0-9 to START recording a burst of samples for that class.")
-    print("Press 'q' to quit.")
+    logger.info("Collecting Data...")
+    logger.info("Press 0-9 to START recording a burst of samples for that class.")
+    logger.info("Press 'q' to quit.")
 
     samples_to_collect = 0
     target_class = -1
@@ -63,7 +64,7 @@ def main():
         if 48 <= key <= 57:  # 0 ~ 9
             target_class = key - 48
             samples_to_collect = BURST_SIZE
-            print(f"Starting collection for class {target_class}...")
+            logger.info(f"Starting collection for class {target_class}...")
 
         if samples_to_collect > 0:
             if results and results.multi_hand_landmarks:
