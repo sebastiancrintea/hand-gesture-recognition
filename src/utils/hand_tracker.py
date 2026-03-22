@@ -1,25 +1,32 @@
-import cv2
-import mediapipe as mp
-from google.protobuf.json_format import MessageToDict
-from config import settings
-from utils.logger import logger
-
-import torch  # Import torch first to load CUDA DLLs
-import onnxruntime as ort
-import numpy as np
-from scipy.special import softmax
 import csv
 import itertools
+from typing import Any
+
+import cv2
+import mediapipe as mp
+import numpy as np
+import onnxruntime as ort
+import torch  # Import torch first to load CUDA DLLs
+from google.protobuf.json_format import MessageToDict
+from scipy.special import softmax
+
+from config import settings
+from utils.logger import logger
 
 
 class HandTracker:
     @staticmethod
-    def normalize_landmarks(image_width, image_height, landmarks):
+    def normalize_landmarks(
+        image_width: int, image_height: int, landmarks: Any, is_left: bool = False
+    ) -> list[float]:
         base_x, base_y = landmarks[0].x, landmarks[0].y
 
         landmark_list = []
         for lm in landmarks:
-            landmark_list.append([lm.x - base_x, lm.y - base_y])
+            x = lm.x - base_x
+            if is_left:
+                x = -x
+            landmark_list.append([x, lm.y - base_y])
 
         landmark_list = list(itertools.chain.from_iterable(landmark_list))
         max_value = max(list(map(abs, landmark_list)))
@@ -30,7 +37,7 @@ class HandTracker:
         landmark_list = list(map(normalize_, landmark_list))
         return landmark_list
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -78,7 +85,7 @@ class HandTracker:
             logger.error(f"Error loading ONNX model: {e}")
             self.ort_session = None
 
-    def process(self, frame):
+    def process(self, frame: np.ndarray) -> Any:
 
         if self.frame_count % settings.FRAME_SKIP == 0:
             if settings.INFERENCE_WIDTH > 0 and settings.INFERENCE_HEIGHT > 0:
@@ -97,10 +104,13 @@ class HandTracker:
             if results.multi_hand_landmarks and self.ort_session:
                 self.gesture_ids = []
                 self.gesture_scores = []
-                for hand_landmarks in results.multi_hand_landmarks:
+                for hand_landmarks, handedness in zip(
+                    results.multi_hand_landmarks, results.multi_handedness
+                ):
                     h, w, _ = frame.shape
+                    is_left = handedness.classification[0].label == "Left"
                     landmark_list = HandTracker.normalize_landmarks(
-                        w, h, hand_landmarks.landmark
+                        w, h, hand_landmarks.landmark, is_left
                     )
 
                     input_data = np.array([landmark_list], dtype=np.float32)
@@ -124,7 +134,12 @@ class HandTracker:
         self.frame_count += 1
         return self.last_results
 
-    def draw(self, frame, results):
+    def draw(
+        self,
+        frame: np.ndarray,
+        results: Any,
+        suppress_gesture_hands: set[int] | None = None,
+    ) -> None:
 
         if not results or not results.multi_hand_landmarks:
             return
@@ -158,13 +173,21 @@ class HandTracker:
                         "classification"
                     ][0]["label"]
 
-                    if hasattr(self, "gesture_ids") and i < len(self.gesture_ids):
+                    if (
+                        hasattr(self, "gesture_ids")
+                        and i < len(self.gesture_ids)
+                        and (
+                            suppress_gesture_hands is None
+                            or i not in suppress_gesture_hands
+                        )
+                    ):
                         gesture_id = self.gesture_ids[i]
                         if gesture_id < len(self.labels):
                             gesture_name = self.labels[gesture_id]
                             confidence = self.gesture_scores[i]
 
                             label_text = f"{gesture_name} ({confidence * 100:.1f}%)"
+                            label_color = (0, 0, 255) if gesture_name == "FingerHeart" else (0, 255, 0)
 
                             cv2.putText(
                                 frame,
@@ -172,7 +195,7 @@ class HandTracker:
                                 (x_min, y_min - 40),
                                 cv2.FONT_HERSHEY_SIMPLEX,
                                 1.0,
-                                (0, 255, 0),
+                                label_color,
                                 2,
                                 cv2.LINE_AA,
                             )

@@ -1,18 +1,30 @@
-import torch
-import torch.onnx
-import torch.nn as nn
-import torch.optim as optim
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from model.gesture_net import GestureNet
-from utils.logger import logger
+import csv
 import os
 
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.onnx
+import torch.optim as optim
+from sklearn.model_selection import train_test_split
 
-def main():
+from model.gesture_net import GestureNet
+from utils.logger import logger
+
+
+def load_label_names() -> list[str]:
+    label_path = "model/keypoint_classifier/keypoint_classifier_label.csv"
+    try:
+        with open(label_path, encoding="utf-8-sig") as f:
+            return [row[0] for row in csv.reader(f)]
+    except Exception:
+        return []
+
+
+def main() -> None:
     dataset_path = "model/keypoint_classifier/keypoint.csv"
-    model_save_path = "model/keypoint_classifier/keypoint_classifier.pth"
+    model_save_path = "model/keypoint_classifier/keypoint_classifier.pt"
     input_size = 42  # 21 landmarks * 2 (x, y)
 
     if not os.path.exists(dataset_path):
@@ -26,6 +38,7 @@ def main():
     X = df.iloc[:, 1:].values.astype("float32")  # Features (Landmarks)
     y = df.iloc[:, 0].values.astype("int64")  # Labels (Class IDs)
 
+    label_names = load_label_names()
     num_classes = len(np.unique(y))
     logger.info(f"Found {num_classes} classes: {np.unique(y)}")
 
@@ -52,7 +65,7 @@ def main():
 
     logger.info("Starting training...")
 
-    num_epochs = 100
+    num_epochs = 200
     for epoch in range(num_epochs):
         model.train()
 
@@ -71,12 +84,23 @@ def main():
         test_outputs = model(X_test)
         _, predicted = torch.max(test_outputs.data, 1)
         accuracy = (predicted == y_test).sum().item() / len(y_test)
-        logger.info(f"Accuracy on test set: {accuracy * 100:.2f}%")
+        logger.info(f"Overall accuracy: {accuracy * 100:.2f}%")
+
+        predicted_np = predicted.cpu().numpy()
+        y_test_np = y_test.cpu().numpy()
+        logger.info("Per-class accuracy:")
+        for class_id in sorted(np.unique(y_test_np)):
+            mask = y_test_np == class_id
+            class_acc = (predicted_np[mask] == class_id).sum() / mask.sum()
+            name = (
+                label_names[class_id] if class_id < len(label_names) else str(class_id)
+            )
+            logger.info(f"  [{class_id}] {name:<14} {class_acc * 100:.1f}%")
 
     torch.save(model.state_dict(), model_save_path)
     logger.info(f"Model saved to {model_save_path}")
 
-    onnx_save_path = model_save_path.replace(".pth", ".onnx")
+    onnx_save_path = model_save_path.replace(".pt", ".onnx")
 
     # Create dummy input for export trace (1 batch, 42 features)
     dummy_input = torch.randn(1, input_size, requires_grad=True).to(device)
