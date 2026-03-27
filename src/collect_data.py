@@ -146,7 +146,7 @@ def main() -> None:
                 ):
                     is_left = handedness.classification[0].label == "Left"
                     landmark_list = HandTracker.normalize_landmarks(
-                        frame.shape[1], frame.shape[0], hand_landmarks.landmark, is_left
+                        hand_landmarks.landmark, is_left
                     )
                     logging_csv(target_class, landmark_list)
 

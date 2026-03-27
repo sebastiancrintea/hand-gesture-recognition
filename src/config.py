@@ -2,6 +2,7 @@ class Settings:
     MAX_NUM_HANDS: int = 10
     MIN_DETECTION_CONFIDENCE: float = 0.7
     FRAME_SKIP: int = 4
+    BATCH_SIZE: int = 32
 
     # Resolution for AI Inference (Smaller = Faster, Less Precise)
     # Keep aspect ratio roughly same as webcam (usually 16:9)

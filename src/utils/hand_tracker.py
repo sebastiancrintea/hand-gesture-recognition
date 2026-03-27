@@ -1,12 +1,13 @@
 import csv
 import itertools
+import math
 from typing import Any
 
 import cv2
 import mediapipe as mp
 import numpy as np
 import onnxruntime as ort
-import torch  # Import torch first to load CUDA DLLs
+import torch  # noqa: F401 — must import before onnxruntime to load CUDA DLLs
 from google.protobuf.json_format import MessageToDict
 from scipy.special import softmax
 
@@ -16,25 +17,31 @@ from utils.logger import logger
 
 class HandTracker:
     @staticmethod
-    def normalize_landmarks(
-        image_width: int, image_height: int, landmarks: Any, is_left: bool = False
-    ) -> list[float]:
+    def normalize_landmarks(landmarks: Any, is_left: bool = False) -> list[float]:
+        # Translate: wrist (landmark 0) becomes origin
         base_x, base_y = landmarks[0].x, landmarks[0].y
+        coords = [[lm.x - base_x, lm.y - base_y] for lm in landmarks]
 
-        landmark_list = []
-        for lm in landmarks:
-            x = lm.x - base_x
-            if is_left:
-                x = -x
-            landmark_list.append([x, lm.y - base_y])
+        # Rotate: align wrist→middle-finger MCP (landmark 9) to point upward
+        # In image coords y increases downward, so "up" means negative y direction
+        mcp9_x, mcp9_y = coords[9]
+        angle = math.atan2(mcp9_x, -mcp9_y)  # angle to rotate so MCP9 is at (0, -dist)
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        coords = [
+            [x * cos_a + y * sin_a, -x * sin_a + y * cos_a]
+            for x, y in coords
+        ]
 
-        landmark_list = list(itertools.chain.from_iterable(landmark_list))
-        max_value = max(list(map(abs, landmark_list)))
+        # Mirror left hand so both hands share the same feature space
+        if is_left:
+            coords = [[-x, y] for x, y in coords]
 
-        def normalize_(n):
-            return n / max_value if max_value > 0 else 0
+        # Scale: divide by wrist→MCP9 distance for anatomically stable normalization
+        scale = math.hypot(coords[9][0], coords[9][1])
+        if scale > 0:
+            coords = [[x / scale, y / scale] for x, y in coords]
 
-        landmark_list = list(map(normalize_, landmark_list))
+        landmark_list = list(itertools.chain.from_iterable(coords))
         return landmark_list
 
     def __init__(self) -> None:
@@ -107,19 +114,13 @@ class HandTracker:
                 for hand_landmarks, handedness in zip(
                     results.multi_hand_landmarks, results.multi_handedness
                 ):
-                    h, w, _ = frame.shape
                     is_left = handedness.classification[0].label == "Left"
                     landmark_list = HandTracker.normalize_landmarks(
-                        w, h, hand_landmarks.landmark, is_left
+                        hand_landmarks.landmark, is_left
                     )
 
                     input_data = np.array([landmark_list], dtype=np.float32)
-
-                    outputs = self.ort_session.run(None, {self.input_name: input_data})
-
-                    output_tensor = outputs[0]
-
-                    probs = softmax(output_tensor[0])
+                    probs = softmax(self.ort_session.run(None, {self.input_name: input_data})[0][0])
                     gesture_id = np.argmax(probs)
                     max_score = probs[gesture_id]
 

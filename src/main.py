@@ -73,10 +73,7 @@ def main() -> None:
             f"Using OpenCV with optimization: {cv2.useOptimized()} and {cv2.getNumThreads()} threads"
         )
     except Exception:
-        logger.warning(
-            "OpenCV optimization not available, running with default settings."
-        )
-        pass
+        logger.warning("OpenCV optimization not available, running with default settings.")
 
     vs = WebCamStream(src=0).start()
     cvFpsCalc = CvFpsCalc(buffer_len=10)
@@ -126,7 +123,7 @@ def main() -> None:
         else:
             frame_display = frame
 
-        cv2.imshow("Threaded Ultra-Fast Tracker", frame_display)
+        cv2.imshow("Gesture Recognition", frame_display)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break

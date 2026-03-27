@@ -8,7 +8,9 @@ import torch.nn as nn
 import torch.onnx
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, TensorDataset
 
+from config import settings
 from model.gesture_net import GestureNet
 from utils.logger import logger
 
@@ -32,57 +34,68 @@ def main() -> None:
         return
 
     logger.info("Loading dataset...")
-    # Read CSV. We assume no header, so first column is label, others are 42 coords
     df = pd.read_csv(dataset_path, header=None)
 
-    X = df.iloc[:, 1:].values.astype("float32")  # Features (Landmarks)
-    y = df.iloc[:, 0].values.astype("int64")  # Labels (Class IDs)
+    X = df.iloc[:, 1:].values.astype("float32")
+    y = df.iloc[:, 0].values.astype("int64")
 
     label_names = load_label_names()
     num_classes = len(np.unique(y))
     logger.info(f"Found {num_classes} classes: {np.unique(y)}")
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        X, y, test_size=0.2, random_state=42, stratify=y
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Training on device: {device}")
 
-    X_train = torch.from_numpy(X_train).to(device)
-    y_train = torch.from_numpy(y_train).to(device)
+    X_train_t = torch.from_numpy(X_train).to(device)
+    y_train_t = torch.from_numpy(y_train).to(device)
     X_test = torch.from_numpy(X_test).to(device)
     y_test = torch.from_numpy(y_test).to(device)
+
+    train_dataset = TensorDataset(X_train_t, y_train_t)
+    train_loader = DataLoader(
+        train_dataset, batch_size=settings.BATCH_SIZE, shuffle=True
+    )
 
     model = GestureNet(
         input_size=input_size, hidden_size=96, num_classes=num_classes
     ).to(device)
 
-    # Loss Function (CrossEntropyLoss includes Softmax)
     criterion = nn.CrossEntropyLoss()
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     logger.info("Starting training...")
 
-    num_epochs = 200
+    num_epochs = 500
     for epoch in range(num_epochs):
         model.train()
+        epoch_loss = 0.0
 
-        outputs = model(X_train)
-        loss = criterion(outputs, y_train)
+        for X_batch, y_batch in train_loader:
+            # Gaussian noise augmentation — makes model robust to landmark jitter
+            X_batch = X_batch + torch.randn_like(X_batch) * 0.01
 
-        optimizer.zero_grad()  # Clear old gradients
-        loss.backward()  # Calculate new gradients
-        optimizer.step()  # Update weights
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
 
         if (epoch + 1) % 10 == 0:
-            logger.info(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}")
+            avg_loss = epoch_loss / len(train_loader)
+            logger.info(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {avg_loss:.4f}")
 
     model.eval()
     with torch.no_grad():
         test_outputs = model(X_test)
-        _, predicted = torch.max(test_outputs.data, 1)
+        _, predicted = torch.max(test_outputs, 1)
         accuracy = (predicted == y_test).sum().item() / len(y_test)
         logger.info(f"Overall accuracy: {accuracy * 100:.2f}%")
 
@@ -101,23 +114,18 @@ def main() -> None:
     logger.info(f"Model saved to {model_save_path}")
 
     onnx_save_path = model_save_path.replace(".pt", ".onnx")
-
-    # Create dummy input for export trace (1 batch, 42 features)
     dummy_input = torch.randn(1, input_size, requires_grad=True).to(device)
 
     torch.onnx.export(
-        model,  # model being run
-        dummy_input,  # model input (or a tuple for multiple inputs)
-        onnx_save_path,  # where to save the model
-        export_params=True,  # store the trained parameter weights inside the model file
-        opset_version=17,  # the ONNX version to export the model to
-        do_constant_folding=True,  # whether to execute constant folding for optimization
-        input_names=["input"],  # the model's input names
-        output_names=["output"],  # the model's output names
-        dynamic_axes={
-            "input": {0: "batch_size"},  # variable length axes
-            "output": {0: "batch_size"},
-        },
+        model,
+        dummy_input,
+        onnx_save_path,
+        export_params=True,
+        opset_version=17,
+        do_constant_folding=True,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
     )
     logger.info(f"ONNX model saved to {onnx_save_path}")
 
